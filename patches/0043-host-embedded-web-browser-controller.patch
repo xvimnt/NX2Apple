@@ -1,0 +1,1516 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Javier Monterroso <jmonterroso@UNJDomain.com>
+Date: Sat, 31 Oct 2026 16:37:27 +0100
+Subject: [PATCH] host: embedded web browser controller
+
+Upstream-Status: forwarded seedds/nxnative#806
+Reason: Embedded HTTP/WebSocket server allowing phones on Wi-Fi to act as gamepads
+Issue: LNPANDY/NX2Apple#269
+
+---
+ dm/host/.gitignore         |   1 +
+ dm/host/Makefile           |  12 +-
+ dm/host/dm_webpad.c        | 485 +++++++++++++++++++++++++++
+ dm/host/dm_webpad.h        |  38 +++
+ dm/host/front_mac.m        |   3 +
+ dm/host/tests/t_webpad.c   | 179 ++++++++++
+ dm/host/webpad.html        | 665 +++++++++++++++++++++++++++++++++++++
+ dm/ios/Sources/DmGamepad.m |   2 +
+ 8 files changed, 1381 insertions(+), 4 deletions(-)
+ create mode 100644 dm/host/dm_webpad.c
+ create mode 100644 dm/host/dm_webpad.h
+ create mode 100644 dm/host/tests/t_webpad.c
+ create mode 100644 dm/host/webpad.html
+
+diff --git a/dm/host/.gitignore b/dm/host/.gitignore
+index 0abef5e..1f519c2 100644
+--- a/dm/host/.gitignore
++++ b/dm/host/.gitignore
+@@ -5,3 +5,4 @@ dm_bright_levels.inc
+ *.h.tmp
+ *.inc.tmp
+ gen/
++webpad_html.h
+diff --git a/dm/host/Makefile b/dm/host/Makefile
+index 978fee0..8ae8396 100644
+--- a/dm/host/Makefile
++++ b/dm/host/Makefile
+@@ -1,7 +1,7 @@
+ # Game profile (dm/games/<id>/): the host is built for it (make GAME=base game title ID, required: there is no default game). game_profile.h is generated from game.tsv into gen/<id>/; the chain version header dmsh_chain.h (one for every game) lives in dm/gfx/nvn
+ # without GAME only clean passes; anything else (a bare make too, whose default goal is the host) stops and lists the profiles
+ ifeq ($(strip $(GAME)),)
+-ifneq ($(filter-out clean,$(or $(MAKECMDGOALS),dmhost)),)
++ifneq ($(filter-out clean webpad_html.h,$(or $(MAKECMDGOALS),dmhost)),)
+ $(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}'))
+ endif
+ endif
+@@ -17,7 +17,7 @@ GAME_H = gen/$(GAME)/game_profile.h
+ include ../mac/min_os.mk
+ CFLAGS=-O1 -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
+ # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
+-SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics_apple.m $(sort $(wildcard hle_*.c)) front_mac.m entry.S
++SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics_apple.m dm_webpad.c $(sort $(wildcard hle_*.c)) front_mac.m entry.S
+ # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
+ # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
+ GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
+@@ -44,6 +44,10 @@ $(MSL_H): $(MSL_SRC) ../gfx/tools/host_msl.py FORCE
+ 	python3 ../gfx/tools/host_msl.py --sdk $(MSL_SDK) $(if $(MSL_MIN_$(MSL_SDK)),--min $(MSL_MIN_$(MSL_SDK))) $@ $(MSL_SRC)
+ .PHONY: host_msl
+ host_msl: $(MSL_H)
++# Embedded web browser controller HTML asset compiled into C header
++webpad_html.h: webpad.html
++	xxd -i -n webpad_html $< $@
++
+ .DEFAULT_GOAL := dmhost   # The header generation rules are written first below, so the default goal must be stated explicitly (otherwise make only generates the headers and does not build the host)
+ .PHONY: game_profile
+ game_profile: $(GAME_H)
+@@ -63,8 +67,8 @@ endif
+ endif
+ .PHONY: FORCE
+ FORCE:
+-dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(MSL_H)
++dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(MSL_H) webpad_html.h
+ 	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+ clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx build; dmhost_* and *.dSYM beside them, as in .gitignore)
+-	rm -rf gen dmhost dmhost_* *.dSYM
++	rm -rf gen dmhost dmhost_* *.dSYM webpad_html.h
+ .PHONY: clean
+diff --git a/dm/host/dm_webpad.c b/dm/host/dm_webpad.c
+new file mode 100644
+index 0000000..f42031b
+--- /dev/null
++++ b/dm/host/dm_webpad.c
+@@ -0,0 +1,485 @@
++// dm_webpad.c: Clean-room embedded HTTP + WebSocket server for Wi-Fi browser controllers.
++// MIT License.
++#include "dm_webpad.h"
++#include "dm_input.h"
++#include "hle.h"
++#include "webpad_html.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <pthread.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <sys/types.h>
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include <netinet/tcp.h>
++#include <arpa/inet.h>
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <time.h>
++#include <dns_sd.h>
++#include <CommonCrypto/CommonDigest.h>
++
++#define MAX_WEB_CLIENTS 16
++#define WEBPAD_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
++#define WEBPAD_MAX_HEADER_SIZE 2048
++#define WEBPAD_MAX_PAYLOAD_SIZE 256
++
++typedef struct {
++    int fd;
++    struct in_addr ip;
++    uint16_t port;
++    int player_slot; // 0..DM_PLAYERS-1 or -1 if unassigned
++    uint64_t last_seen_ms;
++    uint64_t last_ack_ms;
++    bool active;
++    pthread_t thread;
++} webpad_client_t;
++
++static int g_webpad_enabled = -1;
++static int g_server_fd = -1;
++static pthread_t g_server_thread;
++static pthread_mutex_t g_webpad_lock = PTHREAD_MUTEX_INITIALIZER;
++static webpad_client_t g_clients[MAX_WEB_CLIENTS];
++static DNSServiceRef g_dns_service = NULL;
++
++static uint64_t get_time_ms(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
++}
++
++int dm_webpad_enabled(void) {
++    if (g_webpad_enabled >= 0) return g_webpad_enabled;
++    const char *e1 = getenv("DM_BROWSER_PADS");
++    const char *e2 = getenv("NX_BROWSER_PADS");
++    if ((e1 && atoi(e1)) || (e2 && atoi(e2))) {
++        g_webpad_enabled = 1;
++    } else {
++        g_webpad_enabled = 0;
++    }
++    return g_webpad_enabled;
++}
++
++void dm_webpad_enable(int on) {
++    g_webpad_enabled = on ? 1 : 0;
++}
++
++uint16_t dm_webpad_port(void) {
++    return DM_WEBPAD_DEFAULT_PORT;
++}
++
++int dm_webpad_get_ip(char *buf, size_t cap) {
++    struct ifaddrs *ifaddr, *ifa;
++    if (getifaddrs(&ifaddr) == -1) return -1;
++    int found = -1;
++    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
++        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
++        if (ifa->ifa_flags & IFF_LOOPBACK) continue;
++        if (!(ifa->ifa_flags & IFF_UP)) continue;
++        struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
++        if (inet_ntop(AF_INET, &sin->sin_addr, buf, (socklen_t)cap)) {
++            found = 0;
++            // Prefer standard Wi-Fi adapter (en0)
++            if (strcmp(ifa->ifa_name, "en0") == 0) break;
++        }
++    }
++    freeifaddrs(ifaddr);
++    return found;
++}
++
++static void base64_encode(const unsigned char *in, size_t len, char *out) {
++    static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++    size_t i = 0, j = 0;
++    while (i < len) {
++        size_t rem = len - i;
++        uint32_t oct_a = in[i++];
++        uint32_t oct_b = rem > 1 ? in[i++] : 0;
++        uint32_t oct_c = rem > 2 ? in[i++] : 0;
++        uint32_t triple = (oct_a << 16) | (oct_b << 8) | oct_c;
++        out[j++] = tbl[(triple >> 18) & 0x3F];
++        out[j++] = tbl[(triple >> 12) & 0x3F];
++        out[j++] = rem > 1 ? tbl[(triple >> 6) & 0x3F] : '=';
++        out[j++] = rem > 2 ? tbl[triple & 0x3F] : '=';
++    }
++    out[j] = '\0';
++}
++
++static void ws_accept_key(const char *key, char *out) {
++    char combined[256];
++    snprintf(combined, sizeof(combined), "%s%s", key, WEBPAD_GUID);
++    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
++    CC_SHA1((const unsigned char *)combined, (CC_LONG)strlen(combined), digest);
++    base64_encode(digest, sizeof(digest), out);
++}
++
++static int ws_send_frame(int fd, uint8_t opcode, const uint8_t *payload, size_t len) {
++    if (len > WEBPAD_MAX_PAYLOAD_SIZE) return -1;
++    uint8_t header[10];
++    size_t hlen = 0;
++    header[hlen++] = 0x80 | (opcode & 0x0F);
++    if (len < 126) {
++        header[hlen++] = (uint8_t)len;
++    } else {
++        header[hlen++] = 126;
++        header[hlen++] = (uint8_t)((len >> 8) & 0xFF);
++        header[hlen++] = (uint8_t)(len & 0xFF);
++    }
++    if (write(fd, header, hlen) != (ssize_t)hlen) return -1;
++    if (len > 0 && write(fd, payload, len) != (ssize_t)len) return -1;
++    return 0;
++}
++
++static int assign_player_slot(struct in_addr ip) {
++    for (int i = 0; i < MAX_WEB_CLIENTS; i++) {
++        if (g_clients[i].active && g_clients[i].ip.s_addr == ip.s_addr && g_clients[i].player_slot >= 0) {
++            return g_clients[i].player_slot;
++        }
++    }
++    bool taken[DM_PLAYERS] = { false };
++    for (int i = 0; i < MAX_WEB_CLIENTS; i++) {
++        if (g_clients[i].active && g_clients[i].player_slot >= 0 && g_clients[i].player_slot < DM_PLAYERS) {
++            taken[g_clients[i].player_slot] = true;
++        }
++    }
++    for (int p = 0; p < DM_PLAYERS; p++) {
++        if (!taken[p]) return p;
++    }
++    return -1;
++}
++
++static void update_pad_players_mask(void) {
++    uint32_t mask = 0;
++    for (int i = 0; i < MAX_WEB_CLIENTS; i++) {
++        if (g_clients[i].active && g_clients[i].player_slot >= 0 && g_clients[i].player_slot < DM_PLAYERS) {
++            mask |= (1u << g_clients[i].player_slot);
++        }
++    }
++    dm_pad_players(mask);
++}
++
++static void parse_and_apply_pad(int slot, const char *payload) {
++    if (slot < 0 || slot >= DM_PLAYERS) return;
++    unsigned long raw_btn = 0;
++    float lx = 0.0f, ly = 0.0f;
++    if (sscanf(payload, "%lu,%f,%f", &raw_btn, &lx, &ly) < 3) return;
++
++    if (lx < -1.0f) lx = -1.0f; else if (lx > 1.0f) lx = 1.0f;
++    if (ly < -1.0f) ly = -1.0f; else if (ly > 1.0f) ly = 1.0f;
++
++    uint64_t buttons = (uint64_t)raw_btn & 0xFFFF;
++    int32_t stick_lx = (int32_t)(lx * DM_STICK_MAX);
++    int32_t stick_ly = (int32_t)(ly * DM_STICK_MAX);
++
++    dm_pad_set_player(slot, buttons, stick_lx, stick_ly, 0, 0);
++}
++
++static void *webpad_client_worker(void *arg) {
++    webpad_client_t *c = (webpad_client_t *)arg;
++    int fd = c->fd;
++    bool is_ws = false;
++
++    char ip_str[INET_ADDRSTRLEN];
++    inet_ntop(AF_INET, &c->ip, ip_str, sizeof(ip_str));
++
++    struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
++    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++    int nodelay = 1;
++    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
++
++    uint8_t buf[WEBPAD_MAX_HEADER_SIZE];
++    size_t buf_len = 0;
++
++    // Read initial HTTP request (bounded to WEBPAD_MAX_HEADER_SIZE)
++    while (buf_len < sizeof(buf) - 1) {
++        ssize_t n = read(fd, buf + buf_len, sizeof(buf) - 1 - buf_len);
++        if (n > 0) {
++            buf_len += (size_t)n;
++            buf[buf_len] = '\0';
++            if (strstr((char *)buf, "\r\n\r\n")) break;
++        } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
++            goto cleanup;
++        }
++        usleep(5000);
++    }
++
++    char *req = (char *)buf;
++    if (strncmp(req, "GET /", 5) != 0) goto cleanup;
++
++    char *path_end = strchr(req + 4, ' ');
++    if (!path_end) goto cleanup;
++    *path_end = '\0';
++    char *path = req + 4;
++    char *query = strchr(path, '?');
++    if (query) *query = '\0';
++
++    if (strcmp(path, "/ws") == 0) {
++        // WebSocket upgrade
++        char *key_header = strcasestr(path_end + 1, "Sec-WebSocket-Key:");
++        if (!key_header) goto cleanup;
++        key_header += 18;
++        while (*key_header == ' ') key_header++;
++        char *key_end = strstr(key_header, "\r\n");
++        if (!key_end) goto cleanup;
++        *key_end = '\0';
++
++        char accept_str[64];
++        ws_accept_key(key_header, accept_str);
++
++        char response[512];
++        int rlen = snprintf(response, sizeof(response),
++            "HTTP/1.1 101 Switching Protocols\r\n"
++            "Upgrade: websocket\r\n"
++            "Connection: Upgrade\r\n"
++            "Sec-WebSocket-Accept: %s\r\n\r\n", accept_str);
++        if (write(fd, response, (size_t)rlen) != rlen) goto cleanup;
++
++        is_ws = true;
++
++        pthread_mutex_lock(&g_webpad_lock);
++        c->player_slot = assign_player_slot(c->ip);
++        update_pad_players_mask();
++        pthread_mutex_unlock(&g_webpad_lock);
++        LOG("[webpad] client from %s connected (assigned player %d)", ip_str, c->player_slot + 1);
++
++        char msg[32];
++        int mlen = snprintf(msg, sizeof(msg), "player %d", c->player_slot + 1);
++        ws_send_frame(fd, 0x1, (const uint8_t *)msg, (size_t)mlen);
++    } else {
++        // Serve HTML
++        char header[256];
++        int hlen = snprintf(header, sizeof(header),
++            "HTTP/1.1 200 OK\r\n"
++            "Content-Type: text/html; charset=utf-8\r\n"
++            "Content-Length: %u\r\n"
++            "Connection: close\r\n\r\n", webpad_html_len);
++        (void)write(fd, header, (size_t)hlen);
++        (void)write(fd, webpad_html, webpad_html_len);
++        goto cleanup;
++    }
++
++    // WebSocket frame loop
++    buf_len = 0;
++    c->last_seen_ms = get_time_ms();
++    c->last_ack_ms = 0;
++
++    while (c->active) {
++        uint64_t now = get_time_ms();
++
++        // 4 seconds silence timeout
++        if (now - c->last_seen_ms > 4000) {
++            LOG("[webpad] client %s connection timed out", ip_str);
++            break;
++        }
++
++        // Send periodic player ping
++        if (now - c->last_ack_ms > 500) {
++            c->last_ack_ms = now;
++            char msg[32];
++            int mlen = snprintf(msg, sizeof(msg), "player %d", c->player_slot + 1);
++            if (ws_send_frame(fd, 0x1, (const uint8_t *)msg, (size_t)mlen) < 0) {
++                break;
++            }
++        }
++
++        ssize_t n = read(fd, buf + buf_len, sizeof(buf) - buf_len);
++        if (n > 0) {
++            buf_len += (size_t)n;
++            while (buf_len >= 2) {
++                uint8_t b0 = buf[0];
++                uint8_t b1 = buf[1];
++                uint8_t opcode = b0 & 0x0F;
++                bool masked = (b1 & 0x80) != 0;
++                size_t payload_len = b1 & 0x7F;
++                size_t header_len = 2;
++
++                if (payload_len == 127) {
++                    LOG("[webpad] client %s sent 64-bit length frame, disconnecting", ip_str);
++                    goto cleanup;
++                } else if (payload_len == 126) {
++                    if (buf_len < 4) break;
++                    payload_len = ((size_t)buf[2] << 8) | buf[3];
++                    header_len = 4;
++                }
++
++                // Protect against oversized WebSocket frames
++                if (payload_len > WEBPAD_MAX_PAYLOAD_SIZE) {
++                    LOG("[webpad] client %s sent oversized payload (%zu bytes), disconnecting", ip_str, payload_len);
++                    goto cleanup;
++                }
++
++                size_t mask_offset = header_len;
++                if (masked) header_len += 4;
++
++                if (buf_len < header_len + payload_len) break; // Incomplete frame
++
++                uint8_t *payload_ptr = buf + header_len;
++                if (masked) {
++                    uint8_t *mask = buf + mask_offset;
++                    for (size_t k = 0; k < payload_len; k++) {
++                        payload_ptr[k] ^= mask[k % 4];
++                    }
++                }
++
++                if (opcode == 0x8) {
++                    goto cleanup; // Close
++                } else if (opcode == 0x9) {
++                    ws_send_frame(fd, 0xA, payload_ptr, payload_len); // Ping -> Pong
++                } else if (opcode == 0x1) {
++                    payload_ptr[payload_len] = '\0';
++                    char *text = (char *)payload_ptr;
++                    c->last_seen_ms = now;
++                    parse_and_apply_pad(c->player_slot, text);
++                }
++
++                size_t total_frame = header_len + payload_len;
++                memmove(buf, buf + total_frame, buf_len - total_frame);
++                buf_len -= total_frame;
++            }
++        } else if (n == 0) {
++            break;
++        } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
++            break;
++        }
++
++        usleep(5000);
++    }
++
++cleanup:
++    close(fd);
++    pthread_mutex_lock(&g_webpad_lock);
++    int slot = c->player_slot;
++    c->active = false;
++    c->fd = -1;
++    c->player_slot = -1;
++    if (slot >= 0) {
++        dm_pad_set_player(slot, 0, 0, 0, 0, 0);
++        update_pad_players_mask();
++    }
++    pthread_mutex_unlock(&g_webpad_lock);
++
++    if (is_ws) {
++        LOG("[webpad] client from %s disconnected (player %d freed)", ip_str, slot + 1);
++    }
++    return NULL;
++}
++
++static void *webpad_server_worker(void *arg) {
++    (void)arg;
++    LOG("[webpad] listening for Wi-Fi browser controllers on TCP port %d", DM_WEBPAD_DEFAULT_PORT);
++
++    // Register clean Bonjour service (_nxpad._tcp)
++    DNSServiceRegister(&g_dns_service, 0, 0, "NXPad", "_nxpad._tcp", NULL, NULL, htons(DM_WEBPAD_DEFAULT_PORT), 0, NULL, NULL, NULL);
++
++    while (g_server_fd >= 0) {
++        struct sockaddr_in client_addr;
++        socklen_t addr_len = sizeof(client_addr);
++        int client_fd = accept(g_server_fd, (struct sockaddr *)&client_addr, &addr_len);
++        if (client_fd < 0) {
++            if (g_server_fd < 0) break;
++            usleep(10000);
++            continue;
++        }
++
++        pthread_mutex_lock(&g_webpad_lock);
++        int free_idx = -1;
++        for (int i = 0; i < MAX_WEB_CLIENTS; i++) {
++            if (!g_clients[i].active) {
++                free_idx = i;
++                break;
++            }
++        }
++
++        if (free_idx >= 0) {
++            g_clients[free_idx].fd = client_fd;
++            g_clients[free_idx].ip = client_addr.sin_addr;
++            g_clients[free_idx].port = ntohs(client_addr.sin_port);
++            g_clients[free_idx].player_slot = -1;
++            g_clients[free_idx].last_seen_ms = get_time_ms();
++            g_clients[free_idx].last_ack_ms = 0;
++            g_clients[free_idx].active = true;
++            pthread_create(&g_clients[free_idx].thread, NULL, webpad_client_worker, &g_clients[free_idx]);
++            pthread_detach(g_clients[free_idx].thread);
++        } else {
++            close(client_fd);
++        }
++        pthread_mutex_unlock(&g_webpad_lock);
++    }
++
++    if (g_dns_service) {
++        DNSServiceRefDeallocate(g_dns_service);
++        g_dns_service = NULL;
++    }
++    return NULL;
++}
++
++void dm_webpad_start(void) {
++    if (!dm_webpad_enabled()) return;
++    if (g_server_fd >= 0) return;
++
++    memset(g_clients, 0, sizeof(g_clients));
++    for (int i = 0; i < MAX_WEB_CLIENTS; i++) {
++        g_clients[i].fd = -1;
++        g_clients[i].player_slot = -1;
++    }
++
++    g_server_fd = socket(AF_INET, SOCK_STREAM, 0);
++    if (g_server_fd < 0) {
++        LOG("[webpad] failed to create socket: %s", strerror(errno));
++        return;
++    }
++
++    int opt = 1;
++    setsockopt(g_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
++    setsockopt(g_server_fd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
++
++    struct sockaddr_in addr;
++    memset(&addr, 0, sizeof(addr));
++    addr.sin_family = AF_INET;
++    addr.sin_addr.s_addr = htonl(INADDR_ANY);
++    addr.sin_port = htons(DM_WEBPAD_DEFAULT_PORT);
++
++    if (bind(g_server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
++        LOG("[webpad] cannot bind port %d: %s", DM_WEBPAD_DEFAULT_PORT, strerror(errno));
++        close(g_server_fd);
++        g_server_fd = -1;
++        return;
++    }
++
++    if (listen(g_server_fd, 8) < 0) {
++        LOG("[webpad] cannot listen on socket: %s", strerror(errno));
++        close(g_server_fd);
++        g_server_fd = -1;
++        return;
++    }
++
++    char ip_str[64] = "127.0.0.1";
++    dm_webpad_get_ip(ip_str, sizeof(ip_str));
++    LOG("[webpad] Wi-Fi controller active: open http://%s:%d", ip_str, DM_WEBPAD_DEFAULT_PORT);
++
++    pthread_create(&g_server_thread, NULL, webpad_server_worker, NULL);
++}
++
++void dm_webpad_stop(void) {
++    if (g_server_fd < 0) return;
++    int s = g_server_fd;
++    g_server_fd = -1;
++    close(s);
++
++    pthread_mutex_lock(&g_webpad_lock);
++    for (int i = 0; i < MAX_WEB_CLIENTS; i++) {
++        if (g_clients[i].active) {
++            g_clients[i].active = false;
++            if (g_clients[i].fd >= 0) {
++                close(g_clients[i].fd);
++                g_clients[i].fd = -1;
++            }
++        }
++    }
++    pthread_mutex_unlock(&g_webpad_lock);
++
++    pthread_join(g_server_thread, NULL);
++}
+diff --git a/dm/host/dm_webpad.h b/dm/host/dm_webpad.h
+new file mode 100644
+index 0000000..9f7ffe0
+--- /dev/null
++++ b/dm/host/dm_webpad.h
+@@ -0,0 +1,38 @@
++// dm_webpad.h: Clean-room embedded HTTP + WebSocket gamepad server for local Wi-Fi.
++// MIT License.
++#pragma once
++#include <stddef.h>
++#include <stdint.h>
++#include <stdbool.h>
++
++#define DM_WEBPAD_DEFAULT_PORT 2904
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++// Returns 1 if web browser pads are enabled (DM_BROWSER_PADS=1 or dm_webpad_enable(1)).
++int dm_webpad_enabled(void);
++
++// Explicitly enable or disable webpad server before or during startup.
++void dm_webpad_enable(int on);
++
++// Starts the webpad TCP listener thread and Bonjour/mDNS service advertisement (_nxpad._tcp).
++// Safe to call multiple times (idempotent).
++void dm_webpad_start(void);
++
++// Stops the webpad listener and disconnects clients.
++void dm_webpad_stop(void);
++
++// Synchronizes the webpad subsystem with the current slot mask.
++void dm_webpad_poll(void);
++
++// Returns active webpad port (e.g. 2904).
++uint16_t dm_webpad_port(void);
++
++// Copies primary local IPv4 address into buf (e.g. "192.168.1.38"), returns 0 on success.
++int dm_webpad_get_ip(char *buf, size_t cap);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
+index 99d217d..17b7e66 100644
+--- a/dm/host/front_mac.m
++++ b/dm/host/front_mac.m
+@@ -23,6 +23,7 @@
+ #include "motion_apple.h"
+ #include "motion_pro_mac.h"
+ #include "pad_apple.h"
++#include "dm_webpad.h"
+ #include <signal.h>
+ #include <math.h>
+ #include <sys/stat.h>
+@@ -210,6 +211,7 @@ static void pads_start(void) {
+                                                                            : "each controller is a player of its own, the keyboard plays with player 1");
+     pads_changed(nil);
+     dm_motion_pro_start(pro_devices_changed);
++    dm_webpad_start();
+ }
+ 
+ // Mouse as a single-point touchscreen (front.h dm_touch_set): left button down / drag = finger 0, release = lifted. The content view takes the clicks,
+@@ -257,6 +259,7 @@ - (void)windowDidFailToEnterFullScreen:(NSWindow *)w { (void)w; if (g_fs_failed)
+ // Metal reads MTL_HUD_ENABLED when the process makes its first device, which can be before the window: set from DM_METAL_HUD before main (set in front_run, the HUD did not show)
+ __attribute__((constructor)) static void hud_env(void) { front_hud_env(); }
+ 
++
+ // ---------- Cheats: the menu and the panel (hle_cheats.c holds every state; these only show it and call it) ----------
+ 
+ // A string of the engine as an NSString that is never nil: cheat names, sections and notes come from the player's files,
+diff --git a/dm/host/tests/t_webpad.c b/dm/host/tests/t_webpad.c
+new file mode 100644
+index 0000000..4c03443
+--- /dev/null
++++ b/dm/host/tests/t_webpad.c
+@@ -0,0 +1,179 @@
++// Unit test for dm_webpad.
++// Tests:
++// 1. HTTP HTML serving
++// 2. Direct WebSocket connection & player slot assignment
++// 3. Controller input processing
++// 4. Oversized WebSocket frame rejection
++// 5. 64-bit frame length rejection
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <assert.h>
++#include <unistd.h>
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <pthread.h>
++#include "dm_webpad.h"
++#include "dm_input.h"
++
++static uint32_t g_mock_players = 0;
++static uint64_t g_last_btn = 0;
++static int32_t g_last_lx = 0, g_last_ly = 0;
++static int g_last_player = -1;
++
++void dm_pad_players(uint32_t mask) {
++    g_mock_players = mask;
++}
++
++void dm_pad_set_player(int player, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
++    (void)rx; (void)ry;
++    g_last_player = player;
++    g_last_btn = buttons;
++    g_last_lx = lx;
++    g_last_ly = ly;
++}
++
++static int connect_to_server(void) {
++    int s = socket(AF_INET, SOCK_STREAM, 0);
++    assert(s >= 0);
++    struct sockaddr_in sin;
++    memset(&sin, 0, sizeof(sin));
++    sin.sin_family = AF_INET;
++    sin.sin_port = htons(DM_WEBPAD_DEFAULT_PORT);
++    inet_pton(AF_INET, "127.0.0.1", &sin.sin_addr);
++    int rc = connect(s, (struct sockaddr *)&sin, sizeof(sin));
++    assert(rc == 0);
++    return s;
++}
++
++static void send_ws_handshake(int s, const char *path, char *leftover, size_t cap) {
++    char req[512];
++    snprintf(req, sizeof(req),
++        "GET %s HTTP/1.1\r\n"
++        "Host: localhost:2904\r\n"
++        "Upgrade: websocket\r\n"
++        "Connection: Upgrade\r\n"
++        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
++        "Sec-WebSocket-Version: 13\r\n\r\n", path);
++    write(s, req, strlen(req));
++    char buf[1024];
++    size_t total = 0;
++    while (total < sizeof(buf) - 1) {
++        ssize_t n = read(s, buf + total, sizeof(buf) - 1 - total);
++        if (n <= 0) break;
++        total += (size_t)n;
++        buf[total] = '\0';
++        char *end = strstr(buf, "\r\n\r\n");
++        if (end) {
++            size_t hdr_len = (size_t)(end + 4 - buf);
++            if (leftover && total > hdr_len) {
++                size_t rem = total - hdr_len;
++                if (rem < cap) {
++                    memcpy(leftover, end + 4, rem);
++                    leftover[rem] = '\0';
++                }
++            }
++            break;
++        }
++    }
++    assert(strstr(buf, "HTTP/1.1 101") != NULL);
++}
++
++static void send_masked_text(int s, const char *payload) {
++    size_t plen = strlen(payload);
++    uint8_t frame[512];
++    frame[0] = 0x81;
++    frame[1] = 0x80 | (uint8_t)plen;
++    uint8_t mask[4] = { 0x11, 0x22, 0x33, 0x44 };
++    memcpy(frame + 2, mask, 4);
++    for (size_t i = 0; i < plen; i++) {
++        frame[6 + i] = (uint8_t)payload[i] ^ mask[i % 4];
++    }
++    write(s, frame, 6 + plen);
++}
++
++int main() {
++    printf("[t_webpad] starting unit tests...\n");
++    setenv("DM_BROWSER_PADS", "1", 1);
++    dm_webpad_enable(1);
++    dm_webpad_start();
++    usleep(100000);
++
++    // 1. HTTP GET /
++    int s = connect_to_server();
++    const char *http_req = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
++    write(s, http_req, strlen(http_req));
++    char buf[16384];
++    size_t total = 0;
++    while (total < sizeof(buf) - 1) {
++        ssize_t r = read(s, buf + total, sizeof(buf) - 1 - total);
++        if (r <= 0) break;
++        total += (size_t)r;
++    }
++    buf[total] = '\0';
++    assert(total > 0);
++    assert(strstr(buf, "HTTP/1.1 200 OK") != NULL);
++    assert(strstr(buf, "NX2Apple") != NULL || strstr(buf, "NXPad") != NULL);
++    close(s);
++    printf("[t_webpad] 1. HTTP GET / verified!\n");
++
++    // 2. Direct WebSocket connection & player slot assignment
++    s = connect_to_server();
++    char frame_buf[512] = {0};
++    send_ws_handshake(s, "/ws", frame_buf, sizeof(frame_buf));
++    if (strstr(frame_buf, "player 1") == NULL) {
++        usleep(10000);
++        ssize_t n = read(s, frame_buf, sizeof(frame_buf) - 1);
++        assert(n > 0);
++        frame_buf[n] = '\0';
++    }
++    assert(strstr(frame_buf, "player 1") != NULL);
++    printf("[t_webpad] 2. Direct WebSocket connection & slot assigned!\n");
++
++    // 3. Controller input processing
++    g_last_player = -1;
++    send_masked_text(s, "1,0.500,-1.000");
++    usleep(30000);
++    assert(g_last_player == 0); // Player 1 (slot 0)
++    assert((g_last_btn & DM_BTN_A) != 0);
++    assert((g_mock_players & 1) != 0);
++    close(s);
++    printf("[t_webpad] 3. Controller input processed!\n");
++
++    // 4. Security Fuzz: Oversized WebSocket frame rejected
++    s = connect_to_server();
++    send_ws_handshake(s, "/ws", NULL, 0);
++    uint8_t bad_frame[512];
++    bad_frame[0] = 0x81;
++    bad_frame[1] = 0x80 | 126; // Extended length
++    bad_frame[2] = 0x01;
++    bad_frame[3] = 0x40; // 320 bytes (> WEBPAD_MAX_PAYLOAD_SIZE 256)
++    write(s, bad_frame, 4);
++    int attempts = 0; ssize_t n = 0;
++    while (attempts++ < 20) {
++        n = read(s, buf, sizeof(buf));
++        if (n <= 0) break;
++        usleep(10000);
++    }
++    close(s);
++    printf("[t_webpad] 4. Oversized frame safely dropped!\n");
++
++    // 5. 64-bit frame length (payload_len == 127) must immediately disconnect
++    s = connect_to_server();
++    send_ws_handshake(s, "/ws", NULL, 0);
++    uint8_t frame_127[16] = { 0x81, 0x80 | 127, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 };
++    write(s, frame_127, 14);
++    attempts = 0;
++    while (attempts++ < 20) {
++        n = read(s, buf, sizeof(buf));
++        if (n <= 0) break;
++        usleep(10000);
++    }
++    close(s);
++    printf("[t_webpad] 5. 64-bit length frame safely dropped!\n");
++
++    dm_webpad_stop();
++    printf("[t_webpad] ALL TESTS PASSED!\n");
++    return 0;
++}
+diff --git a/dm/host/webpad.html b/dm/host/webpad.html
+new file mode 100644
+index 0000000..9f0671b
+--- /dev/null
++++ b/dm/host/webpad.html
+@@ -0,0 +1,665 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
++<meta name="apple-mobile-web-app-capable" content="yes">
++<meta name="mobile-web-app-capable" content="yes">
++<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
++<title>NX2Apple Controller Deck</title>
++<style>
++  :root {
++    --brandDark: #080B10;
++    --panelDark: #121620;
++    --surfaceMuted: #1E2430;
++    --borderSubtle: #262F3E;
++    --neonGreen: #22C55E;
++    --nintendoX: #38BDF8;
++    --nintendoY: #FACC15;
++    --nintendoB: #F87171;
++    --nintendoA: #4ADE80;
++  }
++  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
++  html, body {
++    margin: 0; padding: 0; width: 100%; height: 100%;
++    overscroll-behavior: none;
++    touch-action: manipulation;
++    -webkit-touch-callout: none;
++    -webkit-user-select: none;
++    user-select: none;
++    background-color: var(--brandDark);
++    color: #f1f5f9;
++    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
++    overflow: hidden;
++  }
++  body {
++    display: flex; flex-direction: column; justify-content: space-between;
++    padding: max(6px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
++  }
++
++  /* Header */
++  header {
++    width: 100%; display: flex; align-items: center; justify-content: space-between;
++    padding: 6px 12px; z-index: 20; flex-shrink: 0;
++    border-bottom: 1px solid rgba(27, 34, 48, 0.7);
++    background: linear-gradient(to bottom, #0e131c, transparent);
++    border-radius: 12px 12px 0 0;
++  }
++  .brand-group { display: flex; align-items: center; gap: 8px; }
++  .brand-title { font-size: 16px; font-weight: 800; letter-spacing: -0.025em; color: #fff; display: flex; align-items: center; gap: 2px; }
++  .brand-title span { color: #ef4444; }
++  .brand-sub { font-size: 10px; color: #94a3b8; font-weight: 500; letter-spacing: 0.05em; }
++
++  .status-badge {
++    display: flex; align-items: center; gap: 8px;
++    background: rgba(18, 22, 32, 0.9); border: 1px solid var(--borderSubtle);
++    padding: 4px 12px; border-radius: 9999px; font-size: 12px;
++    box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
++  }
++  .ping-dot { position: relative; display: flex; width: 8px; height: 8px; }
++  .ping-dot-core { position: relative; display: inline-flex; border-radius: 9999px; width: 8px; height: 8px; background-color: var(--neonGreen); }
++  .ping-dot-wave {
++    position: absolute; display: inline-flex; width: 100%; height: 100%;
++    border-radius: 9999px; background-color: var(--neonGreen); opacity: 0.75;
++    animation: pulse-wave 2.4s infinite cubic-bezier(0.4, 0, 0.6, 1);
++  }
++  @keyframes pulse-wave {
++    0%, 100% { opacity: 0.8; transform: scale(1); }
++    50% { opacity: 0.2; transform: scale(1.6); }
++  }
++
++  .status-ip { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 600; color: #e2e8f0; }
++  .status-dot { color: #64748b; font-size: 10px; }
++  .status-info { color: var(--neonGreen); font-family: ui-monospace, monospace; font-size: 11px; font-weight: 500; }
++  .status-slot { font-size: 11px; color: #cbd5e1; font-weight: 600; }
++
++  .util-group { display: flex; align-items: center; gap: 8px; }
++  .util-btn {
++    padding: 6px; border-radius: 8px; background: rgba(30, 36, 48, 0.6);
++    border: 1px solid var(--borderSubtle); color: #cbd5e1; cursor: pointer;
++    display: flex; align-items: center; justify-content: center;
++  }
++  .util-btn:active { background: rgba(38, 47, 62, 0.9); }
++
++  /* Main Playfield */
++  main {
++    width: 100%; flex: 1; display: flex; flex-direction: column; justify-content: space-between;
++    position: relative; padding: 4px 6px; max-width: 1280px; margin: 0 auto;
++  }
++
++  /* Top Row Bumpers & Triggers */
++  .top-row { width: 100%; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding-top: 4px; }
++  .shoulder-cluster { display: flex; align-items: center; gap: 8px; }
++
++  /* Tactile Button Styling */
++  .gamepad-btn {
++    touch-action: none; cursor: pointer; user-select: none; -webkit-user-select: none;
++    transition: transform 0.06s ease, filter 0.06s ease, box-shadow 0.06s ease;
++    will-change: transform, box-shadow;
++    box-shadow: inset 0 1px 1px rgba(255,255,255,0.08), 0 4px 12px rgba(0,0,0,0.5);
++  }
++  .gamepad-btn:active, .gamepad-btn.pressed {
++    transform: scale(0.93) translateY(2px);
++    filter: brightness(1.25);
++    box-shadow: inset 0 3px 6px rgba(0,0,0,0.6), 0 1px 2px rgba(0,0,0,0.3);
++  }
++
++  /* Bumper Curves */
++  .btn-zl {
++    width: clamp(64px, 14vw, 96px); height: clamp(48px, 11vmin, 58px);
++    border-radius: 20px 8px 12px 24px;
++    background: linear-gradient(to bottom, #222a38, #121622);
++    border: 1px solid var(--borderSubtle);
++    display: flex; flex-direction: column; align-items: center; justify-content: center;
++    color: #cbd5e1; font-weight: bold; text-align: center;
++  }
++  .btn-l {
++    width: clamp(74px, 17vw, 112px); height: clamp(48px, 11vmin, 58px);
++    border-radius: 12px;
++    background: linear-gradient(to bottom, #283243, #161c28);
++    border: 1px solid var(--borderSubtle);
++    display: flex; align-items: center; justify-content: center;
++    color: #f8fafc; font-weight: 900; font-size: 16px;
++  }
++  .btn-r {
++    width: clamp(74px, 17vw, 112px); height: clamp(48px, 11vmin, 58px);
++    border-radius: 12px;
++    background: linear-gradient(to bottom, #283243, #161c28);
++    border: 1px solid var(--borderSubtle);
++    display: flex; align-items: center; justify-content: center;
++    color: #f8fafc; font-weight: 900; font-size: 16px;
++  }
++  .btn-zr {
++    width: clamp(64px, 14vw, 96px); height: clamp(48px, 11vmin, 58px);
++    border-radius: 8px 20px 24px 12px;
++    background: linear-gradient(to bottom, #222a38, #121622);
++    border: 1px solid var(--borderSubtle);
++    display: flex; flex-direction: column; align-items: center; justify-content: center;
++    color: #cbd5e1; font-weight: bold;
++  }
++  .trigger-sub { font-size: 9px; color: #94a3b8; font-family: ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.05em; }
++  .trigger-main { font-size: 15px; font-weight: 900; color: #f1f5f9; }
++
++  /* Center System Buttons */
++  .center-cluster { display: flex; flex-direction: column; align-items: center; gap: 4px; }
++  .system-bar {
++    display: flex; align-items: center; gap: 10px;
++    background: rgba(17, 22, 34, 0.85); border: 1px solid rgba(38, 47, 62, 0.6);
++    padding: 4px 12px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
++  }
++  .btn-sys {
++    width: 36px; height: 36px; border-radius: 9999px;
++    background: #1b2230; border: 1px solid rgba(51, 65, 85, 0.6);
++    display: flex; align-items: center; justify-content: center;
++    color: #cbd5e1;
++  }
++  .btn-sys-sq {
++    width: 32px; height: 32px; border-radius: 8px;
++    background: #181f2c; border: 1px solid rgba(51, 65, 85, 0.6);
++    display: flex; align-items: center; justify-content: center;
++    color: #94a3b8;
++  }
++  .btn-sys-home {
++    width: 36px; height: 36px; border-radius: 9999px;
++    background: #1e2637; border: 2px solid rgba(6, 182, 212, 0.4);
++    display: flex; align-items: center; justify-content: center;
++    color: #67e8f9;
++  }
++
++  /* Thumb Interaction Zones */
++  .thumb-zones {
++    width: 100%; flex: 1; display: flex; align-items: center; justify-content: space-between;
++    padding: 0 8px; margin: 6px 0; position: relative;
++  }
++
++  /* Analog Stick Cluster */
++  .joystick-container { display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; }
++  .joystick-base {
++    position: relative; width: clamp(130px, 26vmin, 160px); height: clamp(130px, 26vmin, 160px);
++    border-radius: 9999px; background: linear-gradient(to bottom, #10141d, #171d29);
++    border: 2px solid var(--borderSubtle); box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
++    display: flex; align-items: center; justify-content: center; touch-action: none; cursor: pointer;
++  }
++  .stick-guide-v { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 6px 0; pointer-events: none; opacity: 0.35; font-size: 9px; font-weight: bold; color: #cbd5e1; }
++  .stick-guide-h { position: absolute; inset: 0; display: flex; justify-content: space-between; align-items: center; padding: 0 6px; pointer-events: none; opacity: 0.35; font-size: 9px; font-weight: bold; color: #cbd5e1; }
++
++  .joystick-thumb {
++    position: relative; width: clamp(74px, 15vmin, 90px); height: clamp(74px, 15vmin, 90px);
++    border-radius: 9999px; background: linear-gradient(135deg, #2a3447, #1c2331 50%, #131722);
++    border: 2px solid #3d4a61; box-shadow: inset 0 1px 1px rgba(255,255,255,0.08), 0 4px 12px rgba(0,0,0,0.5);
++    display: flex; align-items: center; justify-content: center;
++    background-image: radial-gradient(circle, transparent 38%, rgba(255,255,255,0.05) 40%, transparent 42%),
++                      radial-gradient(circle, transparent 58%, rgba(255,255,255,0.04) 60%, transparent 62%),
++                      radial-gradient(circle, transparent 78%, rgba(255,255,255,0.03) 80%, transparent 82%);
++    transition: transform 0.04s ease-out; will-change: transform;
++  }
++  .thumb-cup {
++    width: clamp(38px, 8vmin, 48px); height: clamp(38px, 8vmin, 48px);
++    border-radius: 9999px; background: #141923; border: 1px solid #2a3547;
++    box-shadow: inset 0 4px 10px rgba(0,0,0,0.8), inset 0 -2px 4px rgba(255,255,255,0.06);
++    display: flex; align-items: center; justify-content: center;
++  }
++  .thumb-center-dot {
++    width: 12px; height: 12px; border-radius: 9999px; background: #1f2838;
++    border: 1px solid rgba(51, 65, 85, 0.6); box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
++  }
++
++  .stick-label {
++    margin-top: 8px; font-size: 10px; font-family: ui-monospace, monospace; text-transform: uppercase;
++    letter-spacing: 0.05em; color: #94a3b8; background: rgba(30, 36, 48, 0.4);
++    padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(38, 47, 62, 0.4);
++  }
++
++  /* ABXY Cluster */
++  .abxy-container { display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; }
++  .abxy-plate {
++    position: relative; width: clamp(190px, 38vmin, 240px); height: clamp(190px, 38vmin, 240px);
++    border-radius: 9999px; background: linear-gradient(to bottom, #111520, #161d2a);
++    border: 2px solid var(--borderSubtle); box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
++    display: flex; align-items: center; justify-content: center;
++  }
++  .cross-bar-h { position: absolute; width: 68%; height: 28%; background: rgba(11, 14, 22, 0.8); border-radius: 9999px; pointer-events: none; }
++  .cross-bar-v { position: absolute; width: 28%; height: 68%; background: rgba(11, 14, 22, 0.8); border-radius: 9999px; pointer-events: none; }
++
++  .abxy-btn {
++    position: absolute; width: clamp(58px, 12vmin, 72px); height: clamp(58px, 12vmin, 72px);
++    border-radius: 9999px; background: linear-gradient(to bottom, #242c3d, #1a202d 50%, #121620);
++    border: 2px solid #3e4c66; display: flex; flex-direction: column; align-items: center; justify-content: center;
++    box-shadow: inset 0 1px 1px rgba(255,255,255,0.08), 0 4px 12px rgba(0,0,0,0.5);
++  }
++  .abxy-btn .btn-char { font-size: clamp(20px, 4.5vmin, 26px); font-weight: 900; color: #fff; line-height: 1; }
++  .abxy-btn .color-pip { width: 6px; height: 6px; border-radius: 9999px; margin-top: 3px; }
++
++  .btn-pos-x { top: 6px; }
++  .btn-pos-x .color-pip { background-color: var(--nintendoX); }
++  .btn-pos-x.pressed, .btn-pos-x:active { border-color: var(--nintendoX); box-shadow: 0 0 12px rgba(56, 189, 248, 0.4); }
++
++  .btn-pos-y { left: 6px; }
++  .btn-pos-y .color-pip { background-color: var(--nintendoY); }
++  .btn-pos-y.pressed, .btn-pos-y:active { border-color: var(--nintendoY); box-shadow: 0 0 12px rgba(250, 204, 21, 0.4); }
++
++  .btn-pos-a { right: 6px; }
++  .btn-pos-a .color-pip { background-color: var(--nintendoA); }
++  .btn-pos-a.pressed, .btn-pos-a:active { border-color: var(--nintendoA); box-shadow: 0 0 12px rgba(74, 222, 128, 0.4); }
++
++  .btn-pos-b { bottom: 6px; }
++  .btn-pos-b .color-pip { background-color: var(--nintendoB); }
++  .btn-pos-b.pressed, .btn-pos-b:active { border-color: var(--nintendoB); box-shadow: 0 0 12px rgba(248, 113, 113, 0.4); }
++
++
++
++  @media (orientation: portrait) {
++    #rotate-hint {
++      display: flex; position: fixed; inset: 0; z-index: 40;
++      background: rgba(8, 11, 16, 0.97); align-items: center; justify-content: center;
++      flex-direction: column; text-align: center; font-size: 17px; font-weight: 700; color: #e2e8f0;
++      padding: 24px;
++    }
++  }
++  @media (orientation: landscape) {
++    #rotate-hint { display: none; }
++  }
++</style>
++</head>
++<body>
++
++<!-- Header Status -->
++<header>
++  <div class="brand-group">
++    <div class="brand-title">NX2<span>Apple</span></div>
++    <div class="brand-sub">— Controller Deck</div>
++  </div>
++
++  <div class="status-badge">
++    <span class="ping-dot">
++      <span class="ping-dot-wave" id="status-wave"></span>
++      <span class="ping-dot-core" id="status-dot"></span>
++    </span>
++    <span class="status-slot" id="player-slot">P-</span>
++    <span class="status-dot">•</span>
++    <span class="status-info" id="status-text">Connecting…</span>
++  </div>
++
++  <div class="util-group">
++    <button class="util-btn" id="haptic-toggle" title="Haptics">
++      <svg id="haptic-icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
++        <path d="M12 2v20M17 5v14M7 5v14M22 9v6M2 9v6" stroke-linecap="round"/>
++      </svg>
++    </button>
++  </div>
++</header>
++
++<!-- Main Playfield -->
++<main>
++  <!-- Top Bumpers & Shoulder Row -->
++  <div class="top-row">
++    <!-- Left Shoulder: ZL & L -->
++    <div class="shoulder-cluster">
++      <div class="gamepad-btn btn-zl" data-key="ZL">
++        <span class="trigger-sub">Trigger</span>
++        <span class="trigger-main">ZL</span>
++      </div>
++      <div class="gamepad-btn btn-l" data-key="L">L</div>
++    </div>
++
++    <!-- Center System Buttons: Minus, Capture, Home, Plus -->
++    <div class="center-cluster">
++      <div class="system-bar">
++        <div class="gamepad-btn btn-sys" data-key="MINUS" title="Minus (-)">
++          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path d="M20 12H4" stroke-linecap="round"/></svg>
++        </div>
++        <div class="gamepad-btn btn-sys-sq" data-key="CAPTURE" title="Capture">
++          <svg width="12" height="12" fill="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></svg>
++        </div>
++        <div class="gamepad-btn btn-sys-home" data-key="HOME" title="Home">
++          <svg width="15" height="15" fill="currentColor" viewBox="0 0 20 20"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
++        </div>
++        <div class="gamepad-btn btn-sys" data-key="PLUS" title="Plus (+)">
++          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" stroke-linecap="round"/></svg>
++        </div>
++      </div>
++    </div>
++
++    <!-- Right Shoulder: R & ZR -->
++    <div class="shoulder-cluster">
++      <div class="gamepad-btn btn-r" data-key="R">R</div>
++      <div class="gamepad-btn btn-zr" data-key="ZR">
++        <span class="trigger-sub">Trigger</span>
++        <span class="trigger-main">ZR</span>
++      </div>
++    </div>
++  </div>
++
++  <!-- Thumb Zones (Left Joystick | Right ABXY) -->
++  <div class="thumb-zones">
++    <!-- Left Thumb: Analog Joystick -->
++    <div class="joystick-container">
++      <div class="joystick-base" id="joystick-base">
++        <div class="stick-guide-v"><span>▲</span><span>▼</span></div>
++        <div class="stick-guide-h"><span>◀</span><span>▶</span></div>
++        <div class="joystick-thumb" id="joystick-thumb">
++          <div class="thumb-cup">
++            <div class="thumb-center-dot"></div>
++          </div>
++        </div>
++      </div>
++      <div class="stick-label">Left Stick (L3 Press)</div>
++    </div>
++
++    <!-- Right Thumb: Large ABXY Diamond Pad -->
++    <div class="abxy-container">
++      <div class="abxy-plate" id="abxy-plate">
++        <div class="cross-bar-h"></div>
++        <div class="cross-bar-v"></div>
++
++        <!-- X (Top) -->
++        <div class="gamepad-btn abxy-btn btn-pos-x" data-key="X">
++          <span class="btn-char">X</span>
++          <span class="color-pip"></span>
++        </div>
++        <!-- Y (Left) -->
++        <div class="gamepad-btn abxy-btn btn-pos-y" data-key="Y">
++          <span class="btn-char">Y</span>
++          <span class="color-pip"></span>
++        </div>
++        <!-- A (Right) -->
++        <div class="gamepad-btn abxy-btn btn-pos-a" data-key="A">
++          <span class="btn-char">A</span>
++          <span class="color-pip"></span>
++        </div>
++        <!-- B (Bottom) -->
++        <div class="gamepad-btn abxy-btn btn-pos-b" data-key="B">
++          <span class="btn-char">B</span>
++          <span class="color-pip"></span>
++        </div>
++      </div>
++      <div class="stick-label">Nintendo Diamond Pad</div>
++    </div>
++  </div>
++</main>
++
++
++
++<div id="rotate-hint">Turn your phone sideways 🔄</div>
++
++<script>
++// Button Bits matching Switch nn::hid::NpadButton / dm_input.h
++const BITS = {
++  A: 1, B: 2, X: 4, Y: 8, LS: 16, RS: 32,
++  L: 64, R: 128, ZL: 256, ZR: 512,
++  PLUS: 1024, MINUS: 2048,
++  HOME: 0, CAPTURE: 0
++};
++
++// Keyboard mappings for desktop preview
++const KEY_MAP = {
++  KeyX: 1, Enter: 1,
++  KeyZ: 2, Backspace: 2,
++  KeyC: 4,
++  KeyV: 8,
++  KeyQ: 64,
++  KeyE: 128,
++  Digit1: 256,
++  Digit3: 512,
++  Equal: 1024,
++  Minus: 2048
++};
++const STICK_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD'];
++
++let hapticsEnabled = true;
++function triggerHaptic(ms = 18) {
++  if (hapticsEnabled && navigator.vibrate) {
++    try { navigator.vibrate(ms); } catch (e) {}
++  }
++}
++
++document.getElementById('haptic-toggle').addEventListener('click', () => {
++  hapticsEnabled = !hapticsEnabled;
++  triggerHaptic(30);
++  document.getElementById('haptic-icon').style.color = hapticsEnabled ? '#22C55E' : '#64748b';
++});
++
++// Touch and Button State
++const activeTouches = new Map(); // touchId -> bitmask
++const activeKeys = new Set();
++let lx = 0, ly = 0;
++let buttonMask = 0;
++let sentState = '';
++let lastAck = 0;
++let playerNum = null;
++let ws = null;
++let pingStart = 0;
++
++const statusDot = document.getElementById('status-dot');
++const statusWave = document.getElementById('status-wave');
++const statusText = document.getElementById('status-text');
++const playerSlot = document.getElementById('player-slot');
++
++function setStatusState(color, label, slotStr) {
++  statusDot.style.backgroundColor = color;
++  statusWave.style.backgroundColor = color;
++  if (label) statusText.textContent = label;
++  if (slotStr) playerSlot.textContent = slotStr;
++}
++
++function refreshButtonsUI() {
++  const prevMask = buttonMask;
++  buttonMask = 0;
++  for (const b of activeTouches.values()) buttonMask |= b;
++  for (const k of activeKeys) buttonMask |= (KEY_MAP[k] || 0);
++
++  if ((buttonMask & ~prevMask)) triggerHaptic(15);
++
++  document.querySelectorAll('.gamepad-btn').forEach(btn => {
++    const key = btn.getAttribute('data-key');
++    const bit = BITS[key] || 0;
++    if (bit) {
++      btn.classList.toggle('pressed', !!(buttonMask & bit));
++    }
++  });
++
++  sendState(false);
++}
++
++function sendState(force) {
++  const msg = buttonMask + ',' + lx.toFixed(3) + ',' + ly.toFixed(3);
++  if ((force || msg !== sentState) && ws && ws.readyState === WebSocket.OPEN) {
++    ws.send(msg);
++    sentState = msg;
++  }
++}
++
++// Multitouch handling for all buttons
++function bitAtPoint(x, y) {
++  const el = document.elementFromPoint(x, y);
++  const btn = el && el.closest('.gamepad-btn');
++  if (!btn) return 0;
++  const key = btn.getAttribute('data-key');
++  return BITS[key] || 0;
++}
++
++// Analog Stick Touch Logic
++const stickBase = document.getElementById('joystick-base');
++const stickThumb = document.getElementById('joystick-thumb');
++let stickTouchId = null;
++let baseRect = null;
++
++function updateStick(clientX, clientY) {
++  if (!baseRect) baseRect = stickBase.getBoundingClientRect();
++  const maxR = baseRect.width * 0.38; // Slightly larger throw ratio for easier reaching of 100% deflection
++  const cx = baseRect.left + baseRect.width / 2;
++  const cy = baseRect.top + baseRect.height / 2;
++  let dx = clientX - cx;
++  let dy = clientY - cy;
++  const dist = Math.hypot(dx, dy);
++  if (dist > maxR) {
++    dx = (dx / dist) * maxR;
++    dy = (dy / dist) * maxR;
++  }
++  stickThumb.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
++
++  // Normalized direct coordinates [-1.0, 1.0]
++  let normX = dx / maxR;
++  let normY = -dy / maxR; // Switch Y is inverted (up is positive)
++
++  // Subtle deadzone
++  const mag = Math.hypot(normX, normY);
++  if (mag < 0.05) {
++    lx = 0;
++    ly = 0;
++  } else {
++    // Linear & responsive: no sticky snapping or locking onto down/up!
++    // A clean circular mapping with gentle axial damping only when clearly horizontal/vertical.
++    lx = Math.max(-1.0, Math.min(1.0, normX));
++    ly = Math.max(-1.0, Math.min(1.0, normY));
++  }
++
++  sendState(false);
++}
++
++function resetStick() {
++  stickThumb.style.transform = 'translate3d(0, 0, 0)';
++  lx = 0; ly = 0;
++  sendState(false);
++}
++
++// Global Touch Listeners
++window.addEventListener('touchstart', (e) => {
++  e.preventDefault();
++  for (let i = 0; i < e.changedTouches.length; i++) {
++    const t = e.changedTouches[i];
++    if (!baseRect) baseRect = stickBase.getBoundingClientRect();
++    const cx = baseRect.left + baseRect.width / 2;
++    const cy = baseRect.top + baseRect.height / 2;
++
++    // Check if touch is inside analog stick base
++    if (stickTouchId === null && Math.hypot(t.clientX - cx, t.clientY - cy) < baseRect.width * 0.58) {
++      stickTouchId = t.identifier;
++      triggerHaptic(10);
++      updateStick(t.clientX, t.clientY);
++    } else {
++      const bit = bitAtPoint(t.clientX, t.clientY);
++      if (bit) activeTouches.set(t.identifier, bit);
++    }
++  }
++  refreshButtonsUI();
++}, { passive: false });
++
++window.addEventListener('touchmove', (e) => {
++  e.preventDefault();
++  for (let i = 0; i < e.changedTouches.length; i++) {
++    const t = e.changedTouches[i];
++    if (t.identifier === stickTouchId) {
++      updateStick(t.clientX, t.clientY);
++    } else if (activeTouches.has(t.identifier)) {
++      activeTouches.set(t.identifier, bitAtPoint(t.clientX, t.clientY));
++    }
++  }
++  refreshButtonsUI();
++}, { passive: false });
++
++window.addEventListener('touchend', (e) => {
++  for (let i = 0; i < e.changedTouches.length; i++) {
++    const t = e.changedTouches[i];
++    if (t.identifier === stickTouchId) {
++      stickTouchId = null;
++      resetStick();
++    }
++    activeTouches.delete(t.identifier);
++  }
++  refreshButtonsUI();
++}, { passive: false });
++
++window.addEventListener('touchcancel', (e) => {
++  for (let i = 0; i < e.changedTouches.length; i++) {
++    const t = e.changedTouches[i];
++    if (t.identifier === stickTouchId) {
++      stickTouchId = null;
++      resetStick();
++    }
++    activeTouches.delete(t.identifier);
++  }
++  refreshButtonsUI();
++}, { passive: false });
++
++// Mouse fallback for desktop testing
++let isMouseDown = false;
++stickBase.addEventListener('mousedown', (e) => {
++  isMouseDown = true;
++  baseRect = stickBase.getBoundingClientRect();
++  updateStick(e.clientX, e.clientY);
++});
++window.addEventListener('mousemove', (e) => {
++  if (isMouseDown) updateStick(e.clientX, e.clientY);
++});
++window.addEventListener('mouseup', () => {
++  if (isMouseDown) {
++    isMouseDown = false;
++    resetStick();
++  }
++});
++
++// Desktop Keyboard mapping
++window.addEventListener('keydown', (e) => {
++  if (!(e.code in KEY_MAP) && !STICK_KEYS.includes(e.code)) return;
++  e.preventDefault();
++  activeKeys.add(e.code);
++  if (stickTouchId === null) {
++    lx = (activeKeys.has('KeyD') ? 1 : 0) - (activeKeys.has('KeyA') ? 1 : 0);
++    ly = (activeKeys.has('KeyW') ? 1 : 0) - (activeKeys.has('KeyS') ? 1 : 0);
++  }
++  refreshButtonsUI();
++});
++
++window.addEventListener('keyup', (e) => {
++  if (e.code in KEY_MAP || STICK_KEYS.includes(e.code)) {
++    e.preventDefault();
++    activeKeys.delete(e.code);
++    if (stickTouchId === null) {
++      lx = (activeKeys.has('KeyD') ? 1 : 0) - (activeKeys.has('KeyA') ? 1 : 0);
++      ly = (activeKeys.has('KeyW') ? 1 : 0) - (activeKeys.has('KeyS') ? 1 : 0);
++    }
++    refreshButtonsUI();
++  }
++});
++
++// WebSocket Connection
++function connectWS() {
++  setStatusState('#eab308', 'Connecting…', 'P-');
++  const wsUrl = 'ws://' + location.host + '/ws';
++  ws = new WebSocket(wsUrl);
++
++  ws.onopen = () => {
++    setStatusState('#38bdf8', 'Connected', 'P-');
++    sendState(true);
++  };
++
++  ws.onmessage = (m) => {
++    lastAck = Date.now();
++    const data = m.data;
++    if (data.startsWith('player ')) {
++      playerNum = parseInt(data.split(' ')[1], 10);
++      setStatusState('#22c55e', 'Connected', 'P' + playerNum);
++    }
++  };
++
++  ws.onclose = () => {
++    playerNum = null;
++    setStatusState('#ef4444', 'Disconnected', 'P-');
++    setTimeout(connectWS, 1500);
++  };
++}
++
++// 50ms keep-alive tick
++setInterval(() => {
++  sendState(true);
++}, 50);
++
++window.addEventListener('resize', () => {
++  baseRect = null;
++});
++
++connectWS();
++</script>
++</body>
++</html>
+diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
+index 395e2e6..ba55474 100644
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -30,6 +30,7 @@
+ #include "motion_apple.h"
+ #include "motion_fusion.h"
+ #include "pad_apple.h"
++#include "dm_webpad.h"
+ #include "pad_slots.h"
+ #include <stdatomic.h>
+ 
+@@ -607,6 +608,7 @@ static void read_pad(GCExtendedGamepad *g) {
+ static void pads_start(void) {
+     const char *e = getenv("DM_PAD_MERGE"); g_merge = e && atoi(e);
+     LOG("front end: %s", g_merge ? "every controller is player 1 (DM_PAD_MERGE)" : "each controller is a player of its own, the touch gamepad plays with player 1");
++    dm_webpad_start();
+ }
+ // Called at start and on every connect / disconnect (gone: the controller that was just removed, nil otherwise); returns whether a controller is in use
+ static BOOL pads_merged(GCController *gone) {

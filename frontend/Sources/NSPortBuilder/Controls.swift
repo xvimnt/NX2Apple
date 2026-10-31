@@ -39,6 +39,10 @@ final class ControlLayout: ObservableObject {
     /// change, so it stays out of `isDefault`, `changeCount` and the Controls sheet's reset.
     @Published var padMerge: Bool { didSet { defaults.set(padMerge, forKey: Self.padMergeKey) } }
     static let padMergeKey = "padMerge"
+
+    /// "Browser controllers over Wi-Fi" (launcher setting): passed at Play as DM_BROWSER_PADS=1.
+    @Published var browserPads: Bool { didSet { defaults.set(browserPads, forKey: Self.browserPadsKey) } }
+    static let browserPadsKey = "browserPads"
     private let defaults: UserDefaults
     /// A key code, -1 for no key. `mode` is nil in settings saved before the layouts, which had only the custom buttons.
     private struct Saved: Codable { var keys: [String: Int]; var pad: [String: String]; var mode: String? }
@@ -46,6 +50,7 @@ final class ControlLayout: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         padMerge = defaults.bool(forKey: Self.padMergeKey)
+        browserPads = defaults.bool(forKey: Self.browserPadsKey)
         if let data = defaults.data(forKey: "controlLayout"), let saved = try? JSONDecoder().decode(Saved.self, from: data) {
             keys = saved.keys.filter { k, code in Self.functions.contains { $0.id == k } && code < 128 }.mapValues { $0 < 0 ? nil : $0 }
             pad = saved.pad.filter { b, to in Self.buttons.contains(b) && (to == "none" || Self.buttons.contains(to)) }
@@ -99,6 +104,7 @@ final class ControlLayout: ObservableObject {
     var environment: [String: String] {
         var env: [String: String] = [:]
         if padMerge { env["DM_PAD_MERGE"] = "1" }
+        if browserPads { env["DM_BROWSER_PADS"] = "1"; env["NX_BROWSER_PADS"] = "1" }
         let k = Self.functions.compactMap { f in keys[f.id].map { "\(f.id)=\($0.map(String.init) ?? "none")" } }
         if !k.isEmpty { env["DM_KEYMAP"] = k.joined(separator: ",") }
         let active = activePad

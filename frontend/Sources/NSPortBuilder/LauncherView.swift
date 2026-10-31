@@ -177,7 +177,8 @@ struct ContentView: View {
                 BuilderView(m: m, library: library, settings: page == .settings, onViewGame: { page = .library },
                             onOpenSettings: { page = .settings }, onChooseLibraryFolder: chooseLibraryFolder,
                             onOpenControls: { controlsOpen = true }, onOpenControllers: { controllerSheet = true }, onRunSetup: onRunSetup, controlChanges: controls.changeCount,
-                            padMerge: Binding(get: { controls.padMerge }, set: { setPadMerge($0) }))
+                            padMerge: Binding(get: { controls.padMerge }, set: { setPadMerge($0) }),
+                            browserPads: Binding(get: { controls.browserPads }, set: { controls.browserPads = $0 }))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             if m.running || page == .library { activityBar }

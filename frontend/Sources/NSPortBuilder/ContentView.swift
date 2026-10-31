@@ -3084,6 +3084,8 @@ struct BuilderView: View {
     var onRunSetup: (() -> Void)?   // the guided first-run setup, again (nil where there is none)
     var controlChanges = 0
     var padMerge: Binding<Bool> = .constant(false)   // "All controllers are player 1" (ControlLayout.padMerge)
+    var browserPads: Binding<Bool> = .constant(false) // Wi-Fi / Browser controllers
+    @State private var showQRModal = false
     @AppStorage(ConsolePrompt.defaultsKey) private var consolePromptOn = true   // ConsoleCoordinator.swift
     @AppStorage(BuildNotice.defaultsKey) private var notifyBuilds = true   // BuildNotifications.swift
     @AppStorage(ReturnAfterPlay.defaultsKey) private var returnAfterPlay = true   // ReturnAfterPlay.swift
@@ -3529,6 +3531,48 @@ struct BuilderView: View {
             row(m.t("console.mergeAll"), detail: m.t("console.mergeNote")) {
                 Toggle("", isOn: padMerge).labelsHidden().toggleStyle(LauncherSwitchStyle())
                     .padTarget("set.padMerge", scope: "main") { padMerge.wrappedValue.toggle() }
+            }
+            divider
+            row(m.t("console.browserControllers"), detail: NetworkUtils.webControllerURL != nil ? "\(m.t("console.browserControllersNote")) \(NetworkUtils.webControllerURL!.absoluteString)" : m.t("console.browserControllersNote"), help: NetworkUtils.webControllerURL?.absoluteString ?? "") {
+                HStack(spacing: 8) {
+                    if browserPads.wrappedValue && NetworkUtils.webControllerURL != nil {
+                        Button {
+                            showQRModal = true
+                        } label: {
+                            Label(m.t("console.qrCode"), systemImage: "qrcode")
+                        }
+                        .buttonStyle(LauncherSecondaryButtonStyle())
+                        .popover(isPresented: $showQRModal, arrowEdge: .trailing) {
+                            if let url = NetworkUtils.webControllerURL, let qrImage = NetworkUtils.generateQRCode(for: url.absoluteString) {
+                                VStack(spacing: 12) {
+                                    Text("Scan to Connect")
+                                        .font(.manrope(14, .bold))
+                                        .foregroundStyle(.white)
+                                    Image(nsImage: qrImage)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 180, height: 180)
+                                        .padding(8)
+                                        .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
+                                    Text(url.absoluteString)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(16)
+                                .frame(width: 220)
+                                .background(LauncherPalette.surface)
+                            }
+                        }
+
+                        Button(m.t("console.airdrop")) {
+                            NetworkUtils.airDropWebControllerURL()
+                        }
+                        .buttonStyle(LauncherSecondaryButtonStyle())
+                    }
+                    Toggle("", isOn: browserPads).labelsHidden().toggleStyle(LauncherSwitchStyle())
+                        .padTarget("set.browserPads", scope: "main") { browserPads.wrappedValue.toggle() }
+                }
             }
             divider
             row(m.t("console.controllers"), detail: m.t("console.controllersRowNote")) {
